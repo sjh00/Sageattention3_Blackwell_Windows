@@ -1,0 +1,40 @@
+# Build / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+*.pyd
+*.obj
+*.lib
+*.exp
+*.pdb
+*.ilk
+.eggs/
+
+# Auto-cloned CUTLASS (fetched by setup.py on first build)
+csrc/
+
+# Logs and local notes
+*.log
+build.log
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / OS
+.vscode/
+.idea/
+.vs/
+*.swp
+*~
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Env
+.venv/
+venv/
+.env
