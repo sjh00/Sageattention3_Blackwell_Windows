@@ -1,5 +1,7 @@
 # SageAttention3 Blackwell Windows 版
 
+**英文版文档：[README.md](README.md)**（中文内容如下）
+
 面向 **Windows** 的 **SageAttention3**（NVIDIA **Blackwell** GPU：RTX 50 系 / `sm_120`，以及 `sm_100` / `sm_121`）构建工程。
 
 本仓库在官方 SageAttention3 Blackwell 源码基础上，加入 **MSVC / Windows 运行时修复**，使生成的 wheel **不仅能编译，还能稳定运行**（避免常见的 `CUDA error: misaligned address` 崩溃）。

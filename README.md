@@ -1,5 +1,7 @@
 # SageAttention3 Blackwell for Windows
 
+**中文版文档：[README_zh.md](README_zh.md)**（English below）
+
 Windows-oriented build of **SageAttention3** (FP4 microscaling attention for NVIDIA **Blackwell** GPUs: RTX 50-series / `sm_120`, and related `sm_100` / `sm_121`).
 
 This repository packages the SageAttention3 Blackwell sources with **MSVC / Windows runtime fixes** so the wheel not only **builds**, but also **runs** correctly (avoids the common `CUDA error: misaligned address` crash).
