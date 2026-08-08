@@ -47,7 +47,7 @@ struct SoftmaxFused{
         Tensor acc_conversion_flatten = group_modes<1, 5>(group_modes<0, 2>(flatten(acc_conversion_view)));
         
         if constexpr (FirstTile) {
-            fill(row_max, -INFINITY);
+            fill(row_max, sage_neg_inf_f());
             clear(row_sum);
             fill(scores_scale, 1.f);
 
@@ -59,16 +59,16 @@ struct SoftmaxFused{
                     for (int ei = 0; ei < size<1, 0>(acc_reduction_view); ei++) {
                         AbsMaxP(mi, ni) = fmaxf(AbsMaxP(mi, ni), acc_reduction_view(mi, make_coord(ei, ni)));
                     }
-                    float max_recv = __shfl_xor_sync(int32_t(-1), AbsMaxP(mi, ni), 1); // exchange max with neighbour thread of 8 elements
+                    float max_recv = __shfl_xor_sync(kShflFullMask, AbsMaxP(mi, ni), 1); // exchange max with neighbour thread of 8 elements
                     AbsMaxP(mi, ni) = fmaxf(AbsMaxP(mi, ni), max_recv);
                     row_max(mi) = fmaxf(row_max(mi), AbsMaxP(mi, ni));
                 }
                 
-                float max_recv = __shfl_xor_sync(int32_t(-1), row_max(mi), 2); // exchange max in a quad in a row
+                float max_recv = __shfl_xor_sync(kShflFullMask, row_max(mi), 2); // exchange max in a quad in a row
                 row_max(mi) = fmaxf(row_max(mi), max_recv);
 
                 const float max_scaled = InfCheck
-                                        ? (row_max(mi) == -INFINITY ? 0.f : (row_max(mi) * softmax_scale_log2 + fp8_scalexfp4_scale_log2))
+                                        ? (row_max(mi) == sage_neg_inf_f() ? 0.f : (row_max(mi) * softmax_scale_log2 + fp8_scalexfp4_scale_log2))
                                         : (row_max(mi) * softmax_scale_log2 + fp8_scalexfp4_scale_log2);
                 CUTLASS_PRAGMA_UNROLL
                 for (int ni = 0; ni < size<1>(acc_reduction_view); ni++) {
@@ -94,26 +94,26 @@ struct SoftmaxFused{
             for (int mi = 0; mi < size<0>(acc_reduction_view); mi++) {
                 CUTLASS_PRAGMA_UNROLL
                 for (int ni = 0; ni < size<1, 1>(acc_reduction_view); ni++) {
-                    float local_max = -INFINITY;
+                    float local_max = sage_neg_inf_f();
                     CUTLASS_PRAGMA_UNROLL
                     for (int ei = 0; ei < size<1, 0>(acc_reduction_view); ei++) {
                         local_max = fmaxf(local_max, acc_reduction_view(mi, make_coord(ei, ni)));
                     }
-                    float max_recv = __shfl_xor_sync(int32_t(-1), local_max, 1); // exchange max with neighbour thread of 8 elements
+                    float max_recv = __shfl_xor_sync(kShflFullMask, local_max, 1); // exchange max with neighbour thread of 8 elements
                     AbsMaxP(mi, ni) = fmaxf(local_max, max_recv);
                     row_max(mi) = fmaxf(row_max(mi), AbsMaxP(mi, ni));
                 }
                 
-                float max_recv = __shfl_xor_sync(int32_t(-1), row_max(mi), 2); // exchange max in a quad in a row
+                float max_recv = __shfl_xor_sync(kShflFullMask, row_max(mi), 2); // exchange max in a quad in a row
                 row_max(mi) = fmaxf(row_max(mi), max_recv);
 
                 float scores_max_cur = !InfCheck
                                         ? row_max(mi)
-                                        : (row_max(mi) == -INFINITY ? 0.0f : row_max(mi));
+                                        : (row_max(mi) == sage_neg_inf_f() ? 0.0f : row_max(mi));
                 scores_scale(mi) = flash::ptx_exp2((scores_max_prev(mi) - scores_max_cur) * softmax_scale_log2);
 
                 const float max_scaled = InfCheck
-                                        ? (row_max(mi) == -INFINITY ? 0.f : (row_max(mi) * softmax_scale_log2 + fp8_scalexfp4_scale_log2))
+                                        ? (row_max(mi) == sage_neg_inf_f() ? 0.f : (row_max(mi) * softmax_scale_log2 + fp8_scalexfp4_scale_log2))
                                         : (row_max(mi) * softmax_scale_log2 + fp8_scalexfp4_scale_log2);
                 row_sum(mi) = row_sum(mi) * scores_scale(mi);
                 CUTLASS_PRAGMA_UNROLL
@@ -143,7 +143,7 @@ struct SoftmaxFused{
         for (int mi = 0; mi < size(row_max); ++mi) {
             CUTLASS_PRAGMA_UNROLL
             for (int i = 1; i < RowReductionThr; i <<= 1) {
-                float sum_recv = __shfl_xor_sync(int32_t(-1), row_sum(mi), i);
+                float sum_recv = __shfl_xor_sync(kShflFullMask, row_sum(mi), i);
                 row_sum(mi) += sum_recv;
             }
             float sum = row_sum(mi);

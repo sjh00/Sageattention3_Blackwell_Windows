@@ -4,7 +4,7 @@
 
 Windows-oriented build of **SageAttention3** (FP4 microscaling attention for NVIDIA **Blackwell** GPUs: RTX 50-series / `sm_120`, and related `sm_100` / `sm_121`).
 
-This repository packages the SageAttention3 Blackwell sources with **MSVC / Windows runtime fixes** so the wheel not only **builds**, but also **runs** correctly (avoids the common `CUDA error: misaligned address` crash).
+This repository packages the SageAttention3 Blackwell sources with **MSVC / Windows runtime fixes** so the wheel not only **builds cleanly**, but also **runs** correctly (avoids the common `CUDA error: misaligned address` crash).
 
 > Upstream project: [thu-ml/SageAttention](https://github.com/thu-ml/SageAttention)  
 > Paper: [SageAttention3: Microscaling FP4 Attention](https://arxiv.org/abs/2505.11594)  
@@ -17,10 +17,11 @@ This repository packages the SageAttention3 Blackwell sources with **MSVC / Wind
 Official SageAttention3 is Linux-first. On Windows + MSVC people often get:
 
 1. **Compile errors** (`small` macro from Windows headers, ambiguous `std`, C++ standard flags).
-2. **Silent runtime failures** after a successful wheel build:
+2. **Noisy or fragile builds** (flag conflicts, infinity macros, ABI mix-ups across Python versions).
+3. **Silent runtime failures** after a successful wheel build:
    - `CUDA error: misaligned address`
    - Failures inside `sageattn3_blackwell` / `fp4attn_cuda.fwd`
-3. **Triton dependency issues** on ComfyUI portable Python (missing `Python.h`), which breaks `per_block_mean=True`.
+4. **Triton dependency issues** on ComfyUI portable Python (missing `Python.h`), which breaks `per_block_mean=True`.
 
 This tree applies practical Windows fixes (see [Windows fixes](#windows-fixes) below), verified on:
 
@@ -28,10 +29,10 @@ This tree applies practical Windows fixes (see [Windows fixes](#windows-fixes) b
 |------|------------------------|
 | OS | Windows 11 |
 | GPU | RTX 50-series (compute capability 12.0) |
-| Python | 3.13 |
+| Python | 3.13 (also 3.14 / free-threaded `3.14t` via uv) |
 | PyTorch | 2.13 + CUDA 13.2 |
 | CUDA Toolkit | 13.2 |
-| MSVC | VS 2022 Build Tools 14.44 |
+| MSVC | **Visual Studio 2026** Build Tools (MSVC 14.5x; install path may show as `...\18\BuildTools`) |
 | App | ComfyUI + KJNodes `PatchSageAttention` |
 
 ---
@@ -47,12 +48,14 @@ This tree applies practical Windows fixes (see [Windows fixes](#windows-fixes) b
 
 ### Software
 
-- **Python** 3.10+ (3.12 / 3.13 recommended; must match your app / ComfyUI embed)
+- **Python** 3.10+ (3.12 / **3.13** recommended; **3.14 / 3.14t free-threaded** also supported; **ABI must match** the runtime that will load the wheel)
 - **PyTorch** with CUDA support, ideally **torch >= 2.8** and CUDA **12.8+**
-- **CUDA Toolkit >= 12.8** (13.x recommended for 50-series), with `nvcc` on PATH or set via `CUDA_HOME`
-- **Visual Studio 2022** Build Tools with **Desktop development with C++**
-- **Git** (first build clones [NVIDIA CUTLASS](https://github.com/NVIDIA/cutlass))
-- **ninja**, **packaging**, **wheel**, **build** (installed by the build script)
+- **CUDA Toolkit >= 12.8** (13.x recommended for 50-series), with `nvcc` on PATH or set via `CUDA_HOME` / `--cuda`
+- **Visual Studio 2026** Build Tools with **Desktop development with C++**  
+  (`build_wheel.bat` also accepts VS 2022 if still installed; **2026 is the primary verified host**)
+- **Git** (first build clones [NVIDIA CUTLASS](https://github.com/NVIDIA/cutlass) into `csrc/cutlass/`)
+- **ninja**, **packaging**, **wheel**, **build** — installed by `build_wheel.bat` via **`uv pip`** (falls back to `python -m pip` only if `uv` is missing)
+- Optional: **[uv](https://github.com/astral-sh/uv)** for Python envs and package installs (recommended on Windows)
 
 ---
 
@@ -67,55 +70,74 @@ build_wheel.bat
 Useful options:
 
 ```bat
-rem Clean previous artifacts then build
+rem Clean previous artifacts then build (recommended after switching Python 3.13 <-> 3.14t)
 build_wheel.bat --clean
 
-rem Use ComfyUI portable Python
+rem Use an absolute path to the target Python (uv venv / ComfyUI embed)
+build_wheel.bat --python "D:\myprojects\Sageattention3_Blackwell_Windows\.venv\Scripts\python.exe"
+
+rem ComfyUI portable Python
 build_wheel.bat --python "D:\ComfyUI\python_embeded\python.exe"
 
 rem Point at a specific CUDA Toolkit
 build_wheel.bat --cuda "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2"
 
-rem Limit parallel compile jobs (default 2)
+rem Limit parallel compile jobs (default 2; use 1 if the machine OOMs)
 build_wheel.bat --jobs 1
 ```
 
 On success, wheels appear under `dist\`:
 
 ```text
-dist\sageattn3-1.0.0-cpXXX-cpXXX-win_amd64.whl
+dist\sageattn3-1.0.0-cp313-cp313-win_amd64.whl
+dist\sageattn3-1.0.0-cp314-cp314t-win_amd64.whl   (free-threaded 3.14t example)
 ```
 
-Full compiler log is written to `build.log`.
+Full compiler log is written to `build.log`. The script also scans the log for hard failures and the historical noisy warning classes (`D9025`, `#221`, `#68`).
 
 ### Manual build (advanced)
 
 ```bat
-call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+rem VS 2026 Build Tools (path uses major version "18")
+call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+
 set DISTUTILS_USE_SDK=1
 set CUDA_HOME=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2
 set PATH=%CUDA_HOME%\bin;%PATH%
-python -m pip install -U pip setuptools wheel ninja packaging build
-python -m build --wheel --no-isolation
+
+rem Prefer uv pip (uv venvs do not ship the pip module by default)
+uv pip install --python .venv\Scripts\python.exe -U setuptools wheel ninja packaging build
+.venv\Scripts\python.exe -m build --wheel --no-isolation
 ```
+
+If `vcvars64.bat` is under a different edition (`Community` / `Professional` / `Enterprise`), adjust the path accordingly. `build_wheel.bat` auto-detects common layouts.
 
 ---
 
 ## Install the wheel
 
-Match the **same Python** you used to build (ABI tag must match, e.g. `cp313`):
+Match the **same Python** you used to build (ABI tag must match, e.g. `cp313` or free-threaded `cp314t`):
 
 ```bat
+rem Recommended with uv (Python 3.13 example)
+uv pip install --python .venv\Scripts\python.exe --force-reinstall --no-deps dist\sageattn3-1.0.0-cp313-cp313-win_amd64.whl
+
+rem Free-threaded 3.14t example
+uv pip install --python .venv\Scripts\python.exe --force-reinstall --no-deps dist\sageattn3-1.0.0-cp314-cp314t-win_amd64.whl
+
+rem Classic pip environments (only if pip is available)
 python -m pip install --force-reinstall --no-deps dist\sageattn3-1.0.0-cp313-cp313-win_amd64.whl
 ```
 
 ComfyUI portable example:
 
 ```bat
-D:\ComfyUI\python_embeded\python.exe -m pip install --force-reinstall --no-deps dist\sageattn3-1.0.0-cp313-cp313-win_amd64.whl
+uv pip install --python "D:\ComfyUI\python_embeded\python.exe" --force-reinstall --no-deps dist\sageattn3-1.0.0-cp313-cp313-win_amd64.whl
 ```
 
 Then **restart ComfyUI**.
+
+> **Python 3.14 free-threaded note:** loading the extension may print a `RuntimeWarning` that the GIL was re-enabled. That is expected: these CUDA extensions are not declared free-thread-safe, so CPython enables the GIL on import.
 
 ### Smoke test
 
@@ -163,11 +185,20 @@ Compared with upstream SageAttention3 Blackwell, this project includes:
 | MSVC kernel launch | Pass over-aligned kernel params **by pointer** via a device `DeviceParamsPack` (MSVC cannot pass `alignas(128)` / `CUTE_GRID_CONSTANT` by value) |
 | TMA descriptors | `alignas(TMA_*)` on mainloop / epilogue TMA fields for correct `prefetch_tma_descriptor` |
 | Scheduler | Use real `multiProcessorCount` instead of hard-coded `170` SMs |
-| Compiler flags | C++20, `/Zc:__cplusplus`, `/Zc:preprocessor`, `/bigobj`, `-Usmall`, `USE_CUDA` |
-| Headers | `#undef small` guards (Windows `rpcndr.h` defines `small` as `char`) |
+| Compiler flags | C++20, `/Zc:__cplusplus`, `/Zc:preprocessor`, `/bigobj`, `-Usmall`, `NOMINMAX`, release `-O3` / `NDEBUG`, arch-specific `sm_XXXa` |
+| Clean compile | Strip torch half-disable `-D` flags (avoids MSVC `D9025`); IEEE bit-pattern ±inf (avoids nvcc `#221`); unsigned shuffle masks (avoids `#68`); suppress known third-party noise |
+| Headers | `#undef small` guards (Windows `rpcndr.h` defines `small` as `char`); MSVC-safe function-name macros |
 | Preprocess | Pure **PyTorch** group mean (no Triton) so ComfyUI embed Python works with `per_block_mean` |
+| Tooling | `build_wheel.bat` prefers **`uv pip`**, puts venv `Scripts` on `PATH` for `ninja`, auto-cleans stale ABI `build\` trees |
 
 These draw on community work around upstream PRs/issues such as [#323](https://github.com/thu-ml/SageAttention/pull/323), [#355](https://github.com/thu-ml/SageAttention/pull/355), [#370](https://github.com/thu-ml/SageAttention/pull/370), and related discussions on misaligned-address failures.
+
+Optional debug builds (lineinfo + verbose ptxas):
+
+```bat
+set SAGEATTN3_DEBUG=1
+build_wheel.bat --clean
+```
 
 ---
 
@@ -187,22 +218,25 @@ Tips:
 
 | Symptom | What to try |
 |---------|-------------|
-| `cl.exe` / `vcvars` not found | Install VS 2022 Build Tools + C++ workload; re-run `build_wheel.bat` |
+| `cl.exe` / `vcvars` not found | Install **VS 2026** Build Tools + C++ workload; re-run `build_wheel.bat` |
+| Wrong / unexpected MSVC | Prefer the VS 2026 install used with your CUDA Toolkit; `build_wheel.bat` auto-detects VS 2026 / 2022 |
 | `nvcc` not found | Install CUDA Toolkit 12.8+; pass `--cuda "..."` |
 | `Unsupported GPU` | Need Blackwell (`sm_100` / `sm_120` / `sm_121`) |
-| Wheel installs but import fails | Rebuild with the **same** Python as the runtime (cp312 vs cp313) |
+| Wheel installs but import fails | Rebuild with the **same** Python as the runtime (`cp313` vs `cp314t` cannot mix) |
+| `No module named pip` in uv venv | Use **`uv pip install ...`**, not `python -m pip` |
 | `misaligned address` after custom edits | Keep MSVC pointer launch path and `/Zc:__cplusplus` |
-| ComfyUI still errors after install | Fully restart ComfyUI; confirm `pip show sageattn3` path is under `python_embeded` |
+| ComfyUI still errors after install | Fully restart ComfyUI; confirm package path is under the embed Python |
 | Build OOM / compiler crash | `build_wheel.bat --jobs 1` |
+| Switching 3.13 ↔ 3.14t fails oddly | `build_wheel.bat --clean` (or let auto ABI clean wipe stale `build\`) |
 
 ---
 
 ## Project layout
 
 ```text
-sageattention3_blackwell_Windows/
-  build_wheel.bat      # one-click Windows build
-  setup.py             # CUDA extensions + MSVC flags
+Sageattention3_Blackwell_Windows/
+  build_wheel.bat      # one-click Windows build (MSVC + uv pip + wheel)
+  setup.py             # CUDA extensions + MSVC / nvcc flags
   sageattn3/           # Python API + CUDA sources
   LICENSE              # Apache-2.0 (upstream)
   README.md

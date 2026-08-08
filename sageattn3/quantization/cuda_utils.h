@@ -1,6 +1,8 @@
 #pragma once
 
 #include <stdio.h>
+#include <cstdint>
+#include <type_traits>
 
 #if defined(__HIPCC__)
   #define HOST_DEVICE_INLINE __host__ __device__

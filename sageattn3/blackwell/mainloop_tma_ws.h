@@ -740,11 +740,11 @@ struct CollectiveMainloopFwd {
             CUTLASS_PRAGMA_UNROLL
             for (int i = 0; i < size(tSrS); ++i) {
                 if constexpr (!Is_causal) {  // Just masking based on col
-                    if (int(get<1>(tScS(i))) >= int(unpadded_seqlen_k - n_block * kBlockN)) { tSrS(i) = -INFINITY; }
+                    if (int(get<1>(tScS(i))) >= int(unpadded_seqlen_k - n_block * kBlockN)) { tSrS(i) = sage_neg_inf_f(); }
                 } else { 
                     if (int(get<1>(tScS(i))) >= std::min(seqlen_k - n_block * kBlockN,
                                                         col_limit_causal(int(get<0>(tScS(i))), n_block))) {
-                        tSrS(i) = -INFINITY;
+                        tSrS(i) = sage_neg_inf_f();
                     }
                 }
             }
@@ -787,7 +787,7 @@ struct CollectiveMainloopFwd {
                         );
                     }
                     uint32_t local_sfp = SFP_uint32_view(_0{}, _0{}, mma_m);
-                    uint32_t peer_sfp  = __shfl_xor_sync(int32_t(-1), local_sfp, 2);
+                    uint32_t peer_sfp  = __shfl_xor_sync(kShflFullMask, local_sfp, 2);
                     if ((quad_id & 1) == 0) {
                         uint32_t sfp = (local_sfp & MASK) | ((peer_sfp & MASK) << 8);
                         tOrSFP_uint32_view(_0{}, mma_m) = sfp;
@@ -841,7 +841,7 @@ struct CollectiveMainloopFwd {
             #pragma unroll
             for (int i = 0; i < size(tSrS); ++i) {
                 if (int(get<1>(tScS(i))) >= col_limit_causal(int(get<0>(tScS(i))), n_block - 1)) {
-                    tSrS(i) = -INFINITY;
+                    tSrS(i) = sage_neg_inf_f();
                 }
             }
             softmax_fused.template online_softmax_with_quant</*Is_first=*/false>(tSrS, AbsMaxP, mainloop_params.softmax_scale_log2);

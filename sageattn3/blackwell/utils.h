@@ -38,6 +38,22 @@ namespace flash {
 using namespace cute;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// IEEE-754 float inf via bit pattern. Avoids platform INFINITY macros that expand to
+// (float)(1e+300) under MSVC/CUDA and trigger nvcc warning #221 (value does not fit).
+// Use a plain union (not __int_as_float) so the same helper is valid on host and device.
+__host__ __device__ __forceinline__ float sage_pos_inf_f() {
+    union { uint32_t u; float f; } v{0x7f800000u};
+    return v.f;
+}
+__host__ __device__ __forceinline__ float sage_neg_inf_f() {
+    union { uint32_t u; float f; } v{0xff800000u};
+    return v.f;
+}
+
+// Full warp/lane mask for __shfl_*_sync (unsigned avoids nvcc warning #68).
+static constexpr uint32_t kShflFullMask = 0xffffffffu;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template<typename T>
 struct MaxOp {
@@ -65,7 +81,7 @@ struct Allreduce {
     template<typename T, typename Operator>
     static __device__ __forceinline__ T run(T x, Operator &op) {
         constexpr int OFFSET = THREADS / 2;
-        x = op(x, __shfl_xor_sync(uint32_t(-1), x, OFFSET));
+        x = op(x, __shfl_xor_sync(kShflFullMask, x, OFFSET));
         return Allreduce<OFFSET>::run(x, op);
     }
 };
@@ -76,7 +92,7 @@ template<>
 struct Allreduce<2> {
 template<typename T, typename Operator> 
 static __device__ __forceinline__ T run(T x, Operator &op) {
-    x = op(x, __shfl_xor_sync(uint32_t(-1), x, 1));
+    x = op(x, __shfl_xor_sync(kShflFullMask, x, 1));
     return x;
 }
 };
@@ -151,7 +167,7 @@ __forceinline__ __device__ void max_scale_exp2_sum(Tensor<Engine0, Layout0> &ten
         max(mi) = Allreduce<4>::run(max(mi), max_op);
         // If max is -inf, then all elements must have been -inf (possibly due to masking).
         // We don't want (-inf - (-inf)) since that would give NaN.
-        const float max_scaled = max(mi) == -INFINITY ? 0.f : max(mi) * scale;
+        const float max_scaled = max(mi) == sage_neg_inf_f() ? 0.f : max(mi) * scale;
         sum(mi) = 0;
         #pragma unroll
         for (int ni = 0; ni < size<1>(tensor); ++ni)  {
@@ -176,7 +192,7 @@ __forceinline__ __device__ void scale_apply_exp2(Tensor<Engine0, Layout0> &tenso
         // We don't want (-inf - (-inf)) since that would give NaN.
         // If we don't have float around M_LOG2E the multiplication is done in fp64.
         const float max_scaled = Check_inf
-            ? (max(mi) == -INFINITY ? 0.f : (max(mi) * (Scale_max ? scale : float(M_LOG2E))))
+            ? (max(mi) == sage_neg_inf_f() ? 0.f : (max(mi) * (Scale_max ? scale : float(M_LOG2E))))
             : (max(mi) * (Scale_max ? scale : float(M_LOG2E)));
         #pragma unroll
         for (int ni = 0; ni < size<1>(tensor); ++ni)  {

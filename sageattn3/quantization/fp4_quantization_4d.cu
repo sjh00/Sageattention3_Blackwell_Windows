@@ -26,13 +26,20 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <cuda_runtime_api.h>
 #include <cuda_runtime.h>
-
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
-
 #include <cuda_fp8.h>
 
+#include <sstream>
+#include <stdexcept>
+#include <type_traits>
+
 #include "cuda_utils.h"
+
+// MSVC has no __PRETTY_FUNCTION__; use __FUNCSIG__. Keep GCC/Clang path unchanged.
+#if defined(_MSC_VER)
+#define SAGEATTN3_FUNCTION_NAME __FUNCSIG__
+#else
+#define SAGEATTN3_FUNCTION_NAME __PRETTY_FUNCTION__
+#endif
 
 #define DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(pytorch_dtype, c_type, ...)                \
   if (pytorch_dtype == at::ScalarType::Half) {                                          \
@@ -43,7 +50,7 @@
     __VA_ARGS__                                                                         \
   } else {                                                                              \
     std::ostringstream oss;                                                             \
-    oss << __PRETTY_FUNCTION__ << " failed to dispatch data type " << pytorch_dtype;    \
+    oss << SAGEATTN3_FUNCTION_NAME << " failed to dispatch data type " << pytorch_dtype;\
     TORCH_CHECK(false, oss.str());                                                      \
   }
 
