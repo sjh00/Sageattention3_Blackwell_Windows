@@ -73,10 +73,10 @@ Useful options:
 rem Clean previous artifacts then build (recommended after switching Python 3.13 <-> 3.14t)
 build_wheel.bat --clean
 
-rem Use an absolute path to the target Python (uv venv / ComfyUI embed)
-build_wheel.bat --python "D:\myprojects\Sageattention3_Blackwell_Windows\.venv\Scripts\python.exe"
+rem Project / uv venv Python (relative path is fine)
+build_wheel.bat --python ".venv\Scripts\python.exe"
 
-rem ComfyUI portable Python
+rem ComfyUI portable Python (adjust drive/folder to your install)
 build_wheel.bat --python "D:\ComfyUI\python_embeded\python.exe"
 
 rem Point at a specific CUDA Toolkit
@@ -145,6 +145,43 @@ Then **restart ComfyUI**.
 python -c "import torch; from sageattn3 import sageattn3_blackwell; q=torch.randn(1,8,128,128,device='cuda',dtype=torch.bfloat16); print(sageattn3_blackwell(q,q,q,per_block_mean=False).shape)"
 ```
 
+Compare against torch SDPA (quality + larger-shape speed + causal diagnostics):
+
+```bat
+python scripts/smoke_vs_sdpa.py
+python scripts/smoke_vs_sdpa.py --quick
+python scripts/smoke_vs_sdpa.py --causal-diag
+python scripts/smoke_vs_sdpa.py --bench-only
+```
+
+See [Quality vs SDPA](#quality-vs-sdpa) for expected numbers and how to read causal results.
+
+---
+
+## Quality vs SDPA
+
+Representative results on Blackwell (`sm_120`, bf16, HND layout), comparing `sageattn3_blackwell` to `torch.nn.functional.scaled_dot_product_attention`. Re-run with `scripts/smoke_vs_sdpa.py` on your machine.
+
+| Scenario | Typical cosine vs SDPA | Notes |
+|----------|------------------------|--------|
+| Non-causal (`is_causal=False`) | **~0.98** | Primary path for diffusion / most ComfyUI video flows |
+| `per_block_mean=True` (non-causal) | **~0.98** | Still close to SDPA on random QKV smokes |
+| Causal (`is_causal=True`) | **~0.7x** | Mask **is active**; match to SDPA is coarser |
+| Large shapes (e.g. L≥1024) | — | SA3 often **2–7× faster** than SDPA; tiny L may be slower (launch/quant overhead) |
+
+### Is causal “weakness” a Windows port bug?
+
+**No — it is primarily a sageattn3 / FP4 algorithm tradeoff, not an MSVC-only regression.**
+
+Evidence from smokes + code path review:
+
+1. **Non-causal SA3 ≈ SDPA (~0.98)** on the same Windows wheel → quant, TMA, epilogue, and the MSVC pointer launch path are healthy. A broken host launch would not selectively spare only non-causal.
+2. **Causal SA3 differs strongly from non-causal SA3** → `is_causal` is applied (not a dead flag / wrong compile switch).
+3. **Giving SDPA the same Q/K mean-centering does not close the causal gap** → residual error is dominated by **FP4 Q/K/V + online score path under heavy `-inf` masking**, not by “forgot to center” alone.
+4. Windows-specific changes (pointer-passed kernel params, `sage_neg_inf_f()` bit-pattern, flags) are **shared by causal and non-causal**; pad-only masking (unaligned lengths) still tracks SDPA well.
+
+**Practical guidance:** use SA3 for **non-causal** workloads (default for many image/video models). If a workflow **requires causal attention to stay close to SDPA**, prefer SDPA / another backend for those layers rather than expecting FP4 SA3 causal ≈ full-precision SDPA.
+
 ---
 
 ## Usage
@@ -202,15 +239,17 @@ build_wheel.bat --clean
 
 ---
 
-## Limitations (same as upstream)
+## Limitations (same as upstream + measured notes)
 
 SageAttention3 works well for many **image** models and some **video** models (e.g. CogVideoX-2B, HunyuanVideo, Mochi). It is **not guaranteed lossless** for every model.
 
 Tips:
 
 - Prefer **head_dim 64 or 128**.
+- Prefer **non-causal** SA3 for quality parity with SDPA (~0.98 cosine on smokes); treat **causal** as a coarser FP4 approximation (see [Quality vs SDPA](#quality-vs-sdpa)).
 - If quality drops, mix SageAttention2++ on some layers/timesteps with SageAttention3 on others.
 - Do **not** set `CUDA_LAUNCH_BLOCKING=1` while debugging SA3; it can disturb TMA timing.
+- **Package names:** `sageattn3` (this repo / SA3) ≠ `sageattention` (SA2). Some ComfyUI nodes (e.g. KJNodes MiniMax H3 *Mem Eff* patch) require **`sageattention` 2.x**, not this wheel.
 
 ---
 
@@ -228,6 +267,8 @@ Tips:
 | ComfyUI still errors after install | Fully restart ComfyUI; confirm package path is under the embed Python |
 | Build OOM / compiler crash | `build_wheel.bat --jobs 1` |
 | Switching 3.13 ↔ 3.14t fails oddly | `build_wheel.bat --clean` (or let auto ABI clean wipe stale `build\`) |
+| MiniMax / “Mem Eff Sage” node: sageattention version error | That node needs package **`sageattention`** (SA2), not **`sageattn3`**. Use KJ **Patch Sage Attention** + `sageattn3` mode for this wheel, or install SA2 separately |
+| Causal quality far from SDPA | Expected for FP4 SA3 causal; not a Windows launch regression — see [Quality vs SDPA](#quality-vs-sdpa) |
 
 ---
 
@@ -235,15 +276,16 @@ Tips:
 
 ```text
 Sageattention3_Blackwell_Windows/
-  build_wheel.bat      # one-click Windows build (MSVC + uv pip + wheel)
-  setup.py             # CUDA extensions + MSVC / nvcc flags
-  sageattn3/           # Python API + CUDA sources
-  LICENSE              # Apache-2.0 (upstream)
+  build_wheel.bat           # one-click Windows build (MSVC + uv pip + wheel)
+  setup.py                  # CUDA extensions + MSVC / nvcc flags
+  sageattn3/                # Python API + CUDA sources
+  scripts/smoke_vs_sdpa.py  # quality / speed / causal diagnostics vs SDPA
+  LICENSE                   # Apache-2.0 (upstream)
   README.md
   README_zh.md
 ```
 
-First build clones CUTLASS into `csrc/cutlass/` (gitignored).
+First build clones CUTLASS into `csrc/cutlass/` (gitignored). Local `build/`, `dist/`, `*.log` are gitignored.
 
 ---
 

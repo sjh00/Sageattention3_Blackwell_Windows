@@ -73,10 +73,10 @@ build_wheel.bat
 rem 清理旧产物再编（切换 3.13 / 3.14t 后强烈建议）
 build_wheel.bat --clean
 
-rem 指定目标 Python（建议写绝对路径：uv venv / ComfyUI embed）
-build_wheel.bat --python "D:\myprojects\Sageattention3_Blackwell_Windows\.venv\Scripts\python.exe"
+rem 项目 / uv venv 的 Python（相对路径即可）
+build_wheel.bat --python ".venv\Scripts\python.exe"
 
-rem 指定 ComfyUI 便携 Python
+rem ComfyUI 便携 Python（盘符与目录按本机安装修改）
 build_wheel.bat --python "D:\ComfyUI\python_embeded\python.exe"
 
 rem 指定 CUDA Toolkit 路径
@@ -145,6 +145,43 @@ uv pip install --python "D:\ComfyUI\python_embeded\python.exe" --force-reinstall
 python -c "import torch; from sageattn3 import sageattn3_blackwell; q=torch.randn(1,8,128,128,device='cuda',dtype=torch.bfloat16); print(sageattn3_blackwell(q,q,q,per_block_mean=False).shape)"
 ```
 
+与 torch SDPA 对比（质量 + 大 shape 速度 + 因果诊断）：
+
+```bat
+python scripts/smoke_vs_sdpa.py
+python scripts/smoke_vs_sdpa.py --quick
+python scripts/smoke_vs_sdpa.py --causal-diag
+python scripts/smoke_vs_sdpa.py --bench-only
+```
+
+预期数值与因果结论见 [相对 SDPA 的质量说明](#相对-sdpa-的质量说明)。
+
+---
+
+## 相对 SDPA 的质量说明
+
+在 Blackwell（`sm_120`、bf16、HND）上，将 `sageattn3_blackwell` 与 `torch.nn.functional.scaled_dot_product_attention` 对比的代表性结果如下。请在本机用 `scripts/smoke_vs_sdpa.py` 复测。
+
+| 场景 | 相对 SDPA 余弦（典型） | 说明 |
+|------|------------------------|------|
+| 非因果（`is_causal=False`） | **~0.98** | 扩散 / 多数 ComfyUI 视频流程主路径 |
+| `per_block_mean=True`（非因果） | **~0.98** | 随机 QKV 冒烟仍接近 SDPA |
+| 因果（`is_causal=True`） | **~0.7x** | mask **有效**；与 SDPA 贴合更粗 |
+| 大 shape（如 L≥1024） | — | SA3 相对 SDPA 常 **2–7×** 更快；极短序列可能更慢（启动/量化开销） |
+
+### 因果偏弱是 Windows 适配问题吗？
+
+**不是。主要是 sageattn3 / FP4 算法与精度权衡，而不是 MSVC 独有的回归。**
+
+依据：
+
+1. **非因果 SA3 ≈ SDPA（~0.98）**（同一 Windows wheel）→ 量化、TMA、epilogue 以及 MSVC 指针传参 launch 整体健康。若 host launch 坏了，不会只“放过”非因果。
+2. **因果 SA3 与非因果 SA3 差很大** → `is_causal` 已生效（不是 flag 没传 / 编错分支）。
+3. **给 SDPA 做同样的 Q/K 均值中心化也填不平因果 gap** → 残差主要来自 **FP4 Q/K/V + 大量 `-inf` mask 下的 online score 路径**，不是“单纯忘了中心化”。
+4. Windows 相关改动（指针传参、`sage_neg_inf_f()` 位型、编译选项等）对因果/非因果 **共用**；仅 padding mask 的非对齐长度仍与 SDPA 接近。
+
+**使用建议：** 质量优先场景用 **非因果** SA3。若 workflow **强依赖因果且需贴近 SDPA**，那些层请用 SDPA 或其他后端，不要期望 FP4 SA3 因果 ≈ 全精度 SDPA。
+
 ---
 
 ## 使用方法
@@ -202,15 +239,17 @@ build_wheel.bat --clean
 
 ---
 
-## 限制（与上游一致）
+## 限制（与上游一致 + 实测补充）
 
 SageAttention3 在多数 **图像生成** 模型以及部分 **视频** 模型（如 CogVideoX-2B、HunyuanVideo、Mochi）上效果较好，但 **不保证所有模型无损**。
 
 建议：
 
 - 优先保证 **head_dim 为 64 或 128**。
+- 质量对齐 SDPA 时优先 **非因果** SA3（冒烟 cos≈0.98）；**因果** 视为更粗的 FP4 近似（见 [相对 SDPA 的质量说明](#相对-sdpa-的质量说明)）。
 - 画质异常时，可对部分层/时间步混用 SageAttention2++，其余用 SageAttention3。
 - 调试时 **不要** 设置 `CUDA_LAUNCH_BLOCKING=1`，可能干扰 TMA。
+- **包名区分：** `sageattn3`（本仓库 / SA3）≠ `sageattention`（SA2）。部分 ComfyUI 节点（如 KJNodes MiniMax H3 *Mem Eff*）需要 **`sageattention` 2.x**，不是本 wheel。
 
 ---
 
@@ -228,6 +267,8 @@ SageAttention3 在多数 **图像生成** 模型以及部分 **视频** 模型�
 | 安装后 ComfyUI 仍报错 | 彻底重启；确认包安装在 embed Python 路径下 |
 | 编译内存不足 / 编译器崩溃 | `build_wheel.bat --jobs 1` |
 | 3.13 ↔ 3.14t 切换后异常 | `build_wheel.bat --clean`（或依赖脚本自动清理旧 ABI 的 `build\`） |
+| MiniMax / “Mem Eff Sage” 报 sageattention 版本错误 | 该节点要的是包 **`sageattention`**（SA2），不是 **`sageattn3`**。本 wheel 请用 KJ **Patch Sage Attention** 的 `sageattn3` 模式，或另行安装 SA2 |
+| 因果与 SDPA 差很多 | FP4 SA3 因果的预期表现，不是 Windows launch 回归——见 [相对 SDPA 的质量说明](#相对-sdpa-的质量说明) |
 
 ---
 
@@ -235,15 +276,16 @@ SageAttention3 在多数 **图像生成** 模型以及部分 **视频** 模型�
 
 ```text
 Sageattention3_Blackwell_Windows/
-  build_wheel.bat      # 一键 Windows 编译（MSVC + uv pip + wheel）
-  setup.py             # CUDA 扩展与 MSVC / nvcc 标志
-  sageattn3/           # Python API 与 CUDA 源码
-  LICENSE              # Apache-2.0（上游）
+  build_wheel.bat           # 一键 Windows 编译（MSVC + uv pip + wheel）
+  setup.py                  # CUDA 扩展与 MSVC / nvcc 标志
+  sageattn3/                # Python API 与 CUDA 源码
+  scripts/smoke_vs_sdpa.py  # 相对 SDPA 的质量 / 速度 / 因果诊断
+  LICENSE                   # Apache-2.0（上游）
   README.md
   README_zh.md
 ```
 
-首次构建会把 CUTLASS 克隆到 `csrc/cutlass/`（已写入 `.gitignore`）。
+首次构建会把 CUTLASS 克隆到 `csrc/cutlass/`（已写入 `.gitignore`）。本地 `build/`、`dist/`、`*.log` 已忽略。
 
 ---
 
